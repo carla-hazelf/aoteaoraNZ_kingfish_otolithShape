@@ -1,0 +1,113 @@
+# Clear environment
+rm(list = ls())
+
+library(shapeR)
+library(dplyr)   
+library(stringr)
+library(magick)
+library(tidyr)
+library(purrr)
+
+# -----------------------------------------------------------
+# SHAPE R ANALYSIS
+# -----------------------------------------------------------
+
+# Set working directory to 'ShapeAnalysis' folder
+setwd(file.path(selected_images_base, "ShapeAnalysis"))
+
+# Load ShapeR object
+shape <- shapeR("/path/to/workspace/selected_images/ShapeAnalysis",
+                "input_desired_samples.csv")
+
+# Detect and smooth outlines
+shape <- detect.outline(shape, threshold = 0.3, write.outline.w.org = TRUE) #You can change this to 'FALSE' for it to run more quickly.
+shape <- smoothout(shape, n = 100)
+save(shape, file = "akw_good_verygood_perfectoutlines_smoothed.RData")
+
+# Generate shape coefficients - these are what we use for the shape indices.
+shape <- generateShapeCoefficients(shape)
+save(shape, file = "akw_good_verygood_perfectoutlines_smoothed_coefficients.RData")
+
+# Enrich master list with CSV columns
+shape <- enrich.master.list(shape)
+
+## Save shape coefficients:
+# Extract shape measurements
+shape_meas <- getMeasurements(shape)  
+# Quick check: mean otolith area by Population
+tapply(getMeasurements(shape)$otolith.area, getMasterlist(shape)$pop, mean)
+
+# Add metadata from the master list
+master <- getMasterlist(shape)
+
+# -----------------------------------------------------------
+# STANDARDIZE SHAPE DATA
+# -----------------------------------------------------------
+shape <- stdCoefs(shape, classes = "pop", "length_cm", bonferroni = TRUE)
+save(shape, file = "akw_good_verygood_perfectstd_outlines_smoothed_coefficients.RData")
+##After standardisation, no coefficients removed.
+
+# -----------------------------------------------------------
+# EXPORT STANDARDIZED WAVELETS WITH PREFIX
+# -----------------------------------------------------------
+
+# Extract all standardized wavelet coefficients
+shape.data <- as.data.frame(getStdWavelet(shape))
+
+## We have to extract the std_coefficients specifically, because it doesn't attatch the level/number/etc wavelet with std_ classifier. Basically....
+# Raw coefficients – keeps the proper names... 
+raw_coef  <- getWavelet(shape)          # matrix with names like "Ws2_01"
+std_coef  <- getStdWavelet(shape)       # matrix, *no* names
+
+colnames(std_coef) <- colnames(raw_coef)
+shape.data <- as.data.frame(std_coef)   # now has real names
+colnames(shape.data) <- paste0("std_", colnames(shape.data))
+
+# Merge with metadata from master list
+shape.info <- getMasterlist(shape)
+shape.combined.data <- cbind(shape.info, shape.data)
+
+# Remove specific individual based on 'key' !!! IT'S FROM 2021...just to streamline the analysis :)
+shape.combined.data <- shape.combined.data %>%
+  filter(key != "AW;616215_05_d")
+
+# Save final shape + metadata table
+write.csv(shape.combined.data, file = "shape_combined_data.csv", row.names = FALSE)
+
+## AT THIS POINT....CHECK FOR ALL EXPECTED OTOLITHS BEING PRESENT!
+
+
+#Extract and coerce to a numeric matrix
+coef_mat <- as.matrix(shape.combined.data[, coef_cols])
+
+# Compute Euclidean distance
+dist.mat <- dist(coef_mat, method = "euclidean")
+
+
+
+# -------------------------------------------------------------
+# CAP analysis constrained by Population
+# -------------------------------------------------------------
+
+shape_df <- as.data.frame(coef_mat)
+shape_df$pop <- shape.combined.data$pop
+
+# Constrained ordination (CAP)
+cap.res <- capscale(dist.mat ~ pop, data = shape_df)
+
+# Permutation tests
+anova(cap.res)                  # Global significance
+anova(cap.res, by = "terms")    # Term significance (pop)
+anova(cap.res, by = "axis")     # CAP axis significance
+
+# -------------------------------------------------------------
+pairwise PERMANOVA
+# -------------------------------------------------------------
+pairwise_results <- pairwise.adonis(dist.mat, factors = shape_df$pop, perm = 999, p.adjust.m = "holm")
+print(pairwise_results)
+
+dispersion_test <- betadisper(dist.mat, shape_df$pop)
+permutest(dispersion_test)
+
+# Tukey's HSD on group dispersions
+TukeyHSD(dispersion_test)
