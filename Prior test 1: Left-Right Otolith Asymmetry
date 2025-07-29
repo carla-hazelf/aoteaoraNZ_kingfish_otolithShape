@@ -1,0 +1,297 @@
+# Clear environment
+rm(list = ls())
+
+# Load required libraries
+library(shapeR)
+library(dplyr)   
+library(stringr)
+library(tidyr)
+library(car)
+
+# -----------------------------------------------------------
+# Define paths (I don't reccommend changing this...ShapeR has some requirement).
+## We're just going to pre-edit an excel file with desired samples...it's a bit easier that way!
+# -----------------------------------------------------------
+
+original_image_directory <- "\\path\\to\\workspace\\all_images\\ShapeAnalysis\\Original"
+selected_images_base <- "\\path\\to\\workspace\\selected_images"
+
+selected_image_directory <- file.path(selected_images_base, "ShapeAnalysis", "Original")
+fixed_image_directory <- file.path(selected_images_base, "ShapeAnalysis", "Fixed")
+
+
+# -----------------------------------------------------------
+# SHAPE R ANALYSIS
+# -----------------------------------------------------------
+
+setwd(file.path(selected_images_base, "ShapeAnalysis"))
+
+# Load ShapeR object
+shape <- shapeR("/path/to/workspace/selected_images/ShapeAnalysis",
+                "input_desired_samples.csv")
+
+# Detect and smooth outlines
+shape <- detect.outline(shape, threshold = 0.3, write.outline.w.org = TRUE)
+shape <- smoothout(shape, n = 100)
+save(shape, file = "right_left_pairs_good_verygood_perfectoutlines_smoothed.RData")
+
+
+# Generate shape coefficients
+shape <- generateShapeCoefficients(shape)
+save(shape, file = "right_left_pairs_good_verygood_perfectoutlines_smoothed_coefficients.RData")
+
+# Enrich master list with CSV columns
+shape <- enrich.master.list(shape)
+
+## Save shape coefficients:
+shape_meas <- getMeasurements(shape)  
+
+# Quick check: mean otolith area by side
+tapply(getMeasurements(shape)$otolith.area, getMasterlist(shape)$side, mean)
+
+
+# Add metadata from the master list
+master <- getMasterlist(shape)
+shape_meas$side     <- master$side
+shape_meas$fish_id  <- master$base_name
+shape_meas$pop      <- master$pop
+shape_meas$length_cm <- master$length_cm
+shape_meas$sex      <- master$sex
+shape_meas$yr       <- master$yr
+shape_meas$folder   <- master$folder
+shape_meas$picname  <- master$picname
+
+# ---------------------------------------------
+# Compute shape indices
+# ---------------------------------------------
+
+shape_meas$Circularity <- (shape_meas$otolith.perimeter^2) / shape_meas$otolith.area
+
+shape_meas$Rectangularity <- shape_meas$otolith.area /
+                             (shape_meas$otolith.length * shape_meas$otolith.width)
+
+shape_meas$Roundness <- (4 * shape_meas$otolith.area) /
+                        (pi * (shape_meas$otolith.length^2))
+
+shape_meas$Aspect_Ratio <- shape_meas$otolith.length / shape_meas$otolith.width
+
+shape_meas$Form_Factor <- (4 * pi * shape_meas$otolith.area) /
+                          (shape_meas$otolith.perimeter^2)
+
+shape_meas$Ellipticity <- (shape_meas$otolith.length - shape_meas$otolith.width) /
+                          (shape_meas$otolith.length + shape_meas$otolith.width)
+
+
+# ---------------------------------------------
+# Allometric Standardization of Shape Metrics
+# ---------------------------------------------
+
+# Clean side labels directly in shape object
+shape@master.list$side <- as.character(shape@master.list$side)
+shape@master.list$side <- tolower(trimws(shape@master.list$side))
+shape@master.list$side <- factor(shape@master.list$side, levels = c("left", "right"))
+
+
+# List of variables to standardize
+measure_vars <- c("otolith.area", "otolith.length", "otolith.width", "otolith.perimeter",
+                  "Circularity", "Rectangularity", "Roundness",
+                  "Aspect_Ratio", "Form_Factor", "Ellipticity")
+
+# Mean length
+meanTL <- mean(shape_meas$length_cm, na.rm = TRUE)
+
+# Standardization loop
+for (var in measure_vars) {
+  if (all(!is.na(shape_meas[[var]]))) {
+    logMO <- log(shape_meas[[var]])
+    logTL <- log(shape_meas$length_cm)
+    b_model <- lm(logMO ~ logTL)
+    b <- coef(b_model)[2]
+    Ms <- exp(logMO + b * (log(meanTL) - logTL))
+    var_std <- paste0(var, "_std")
+    shape_meas[[var_std]] <- Ms
+  }
+}
+
+
+# Save to CSV
+write.csv(shape_meas, 
+          file = "right_left_pairs_shape_indices.csv", 
+          row.names = FALSE)
+
+
+
+#this code just changes the indv name so that the side suffix is removed (there's another column for side specifically)
+shape_meas$fish_id <- gsub("(_ld|_d)$", "", shape_meas$picname)
+
+plotWaveletShape(shape, "side", show.angle = TRUE, lwd = 2,lty = 1)
+
+# ---------------------------------------------
+# Left–Right Asymmetry Analysis
+# ---------------------------------------------
+
+# List of standardized shape indices to test
+shape_vars <- c("Circularity_std", "Rectangularity_std", "Roundness_std", 
+                "Aspect_Ratio_std", "Form_Factor_std", "Ellipticity_std")
+
+asymmetry_results <- list()
+
+# Loop over each variable
+for (var in shape_vars) {
+  
+  # Ensure paired matching by fish_id
+  left_vals <- shape_meas %>%
+    filter(side == "left") %>%
+    arrange(fish_id) %>%
+    pull(!!sym(var))
+  
+  right_vals <- shape_meas %>%
+    filter(side == "right") %>%
+    arrange(fish_id) %>%
+    pull(!!sym(var))
+  
+  # Check equal pairing
+  if (length(left_vals) != length(right_vals)) {
+    warning(paste("Mismatch in left/right samples for", var))
+    next
+  }
+
+  # Differences
+  diffs <- left_vals - right_vals
+
+  # Shapiro-Wilk test for normality of differences
+  shapiro <- shapiro.test(diffs)
+  normality <- shapiro$p.value > 0.05
+
+  # Conditional test
+  if (normality) {
+    test <- t.test(left_vals, right_vals, paired = TRUE)
+    test_type <- "Paired t-test"
+    stat_value <- round(test$statistic, 4)
+    df_or_v <- round(test$parameter, 0)
+  } else {
+    test <- wilcox.test(left_vals, right_vals, paired = TRUE)
+    test_type <- "Wilcoxon signed-rank"
+    stat_value <- round(test$statistic, 4)
+    df_or_v <- NA
+  }
+
+  # Save results
+  asymmetry_results[[var]] <- data.frame(
+    Variable = var,
+    Mean_Left = round(mean(left_vals), 4),
+    Mean_Right = round(mean(right_vals), 4),
+    Mean_Diff = round(mean(diffs), 4),
+    Test_Type = test_type,
+    Statistic = stat_value,
+    df_or_V = df_or_v,
+    p_value = round(test$p.value, 4),
+    Shapiro_p = round(shapiro$p.value, 4),
+    Normality_Passed = normality
+  )
+}
+
+# Combine and adjust p-values
+asymmetry_df <- bind_rows(asymmetry_results) %>%
+  mutate(p_value_adjusted_Holm = p.adjust(p_value, method = "holm"),
+         p_value_adjusted_BH = p.adjust(p_value, method = "BH"))
+
+
+print(asymmetry_df)
+
+# Save
+write.csv(asymmetry_df, "asymmetry_test_summary.csv", row.names = FALSE)
+
+
+# ---------------------------------------------
+# ANCOVA: Test interaction between side and fish length
+# ---------------------------------------------
+
+shape_vars <- c("Aspect_Ratio_std", "Circularity_std", "Ellipticity_std",
+                "Form_Factor_std", "Rectangularity_std", "Roundness_std")
+
+ancova_results <- list()
+
+for (var in shape_vars) {
+  
+  formula_full <- as.formula(paste0(var, " ~ length_cm * side"))  # includes interaction
+  formula_reduced <- as.formula(paste0(var, " ~ length_cm + side"))  # assumes common slope
+
+  # Fit full and reduced models
+  model_full <- lm(formula_full, data = shape_meas)
+  model_reduced <- lm(formula_reduced, data = shape_meas)
+
+  # Test for significant interaction
+  anova_result <- anova(model_reduced, model_full)
+
+  # Extract results
+  ancova_results[[var]] <- data.frame(
+    Variable = var,
+    F_value = round(anova_result$`F`[2], 3),
+    p_value = round(anova_result$`Pr(>F)`[2], 4),
+    stringsAsFactors = FALSE
+  )
+}
+
+# Combine
+ancova_summary <- do.call(rbind, ancova_results)
+
+# Adjust p-values (Holm and BH)
+ancova_summary$p_adjust_Holm <- p.adjust(ancova_summary$p_value, method = "holm")
+ancova_summary$p_adjust_BH <- p.adjust(ancova_summary$p_value, method = "BH")
+
+print(ancova_summary)
+
+# Save
+write.csv(ancova_summary, "ancova_interaction_summary.csv", row.names = FALSE)
+
+
+## Checking for ANCOVA assumptions
+
+
+# Initialize list to store assumption test results
+ancova_assumptions <- list()
+
+# Loop through each shape variable
+for (var in shape_vars) {
+
+  # Define reduced ANCOVA model (used if interaction not significant)
+  model_reduced <- lm(as.formula(paste0(var, " ~ length_cm + side")), data = shape_meas)
+  
+  # Extract residuals and fitted values
+  residuals_model <- residuals(model_reduced)
+  fitted_values <- fitted(model_reduced)
+  
+  # Test 1: Normality of residuals
+  shapiro_res <- shapiro.test(residuals_model)
+
+  # Test 2: Homoscedasticity using Levene's Test on residuals by side
+  levene_res <- leveneTest(residuals_model ~ shape_meas$side)
+
+  # Test 3: Linearity (indirect): Add quadratic term and test its significance
+  shape_meas$temp_poly <- shape_meas$length_cm^2
+  model_poly <- lm(as.formula(paste0(var, " ~ length_cm + temp_poly + side")), data = shape_meas)
+  poly_summary <- summary(model_poly)
+  poly_pval <- coef(poly_summary)["temp_poly", "Pr(>|t|)"]
+
+  # Save results
+  ancova_assumptions[[var]] <- data.frame(
+    Variable = var,
+    Shapiro_W_Residuals = round(shapiro_res$statistic, 4),
+    Shapiro_p = round(shapiro_res$p.value, 4),
+    Levene_F = round(levene_res[1, "F value"], 4),
+    Levene_p = round(levene_res[1, "Pr(>F)"], 4),
+    Poly_p = round(poly_pval, 4),
+    Normality_Passed = shapiro_res$p.value > 0.05,
+    Homoscedasticity_Passed = levene_res[1, "Pr(>F)"] > 0.05,
+    Linearity_Passed = poly_pval > 0.05
+  )
+}
+
+ancova_assumption_summary <- do.call(rbind, ancova_assumptions)
+
+# Save results
+write.csv(ancova_assumption_summary, "ancova_assumption_summary.csv", row.names = FALSE)
+
+# View summary
+print(ancova_assumption_summary)
