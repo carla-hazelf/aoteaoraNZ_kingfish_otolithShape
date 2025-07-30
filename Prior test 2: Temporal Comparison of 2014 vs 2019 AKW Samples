@@ -76,11 +76,15 @@ write.csv(shape.combined.data, file = "shape_combined_data.csv", row.names = FAL
 
 ## AT THIS POINT....CHECK FOR ALL EXPECTED OTOLITHS BEING PRESENT!
 
+## Select columns that start with std_Ws *and* whose level is ≥ 1
+coef_cols <- grep("^std_Ws([1-9]|[1-9][0-9])",                # levels 1–99
+                  names(shape.combined.data), 
+                  value = TRUE)
 
 #Extract and coerce to a numeric matrix
 coef_mat <- as.matrix(shape.combined.data[, coef_cols])
 
-# Compute Euclidean distance
+# Computing Euclidean distance...
 dist.mat <- dist(coef_mat, method = "euclidean")
 
 
