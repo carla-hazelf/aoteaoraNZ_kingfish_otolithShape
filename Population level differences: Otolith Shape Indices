@@ -1,0 +1,203 @@
+
+library(rstatix)
+library(dplyr)
+library(tidyr)
+library(ggpubr)
+
+load("all_good_verygood_perfectstd_outlines_smoothed_coefficients.RData")
+
+# Extract shape measurements
+shape_meas <- getMeasurements(shape)  
+master <- getMasterlist(shape)
+# Add metadata from the master list
+
+shape_meas$fish_id  <- master$base_name
+shape_meas$pop      <- master$pop
+shape_meas$length_cm <- master$length_cm
+shape_meas$sex      <- master$sex
+shape_meas$yr       <- master$yr
+shape_meas$folder   <- master$folder
+shape_meas$picname  <- master$picname
+
+# Compute shape indices
+shape_meas$Circularity <- (shape_meas$otolith.perimeter^2) / shape_meas$otolith.area
+
+shape_meas$Rectangularity <- shape_meas$otolith.area /
+                             (shape_meas$otolith.length * shape_meas$otolith.width)
+
+shape_meas$Roundness <- (4 * shape_meas$otolith.area) /
+                        (pi * (shape_meas$otolith.length^2))
+
+shape_meas$Aspect_Ratio <- shape_meas$otolith.length / shape_meas$otolith.width
+
+shape_meas$Form_Factor <- (4 * pi * shape_meas$otolith.area) /
+                          (shape_meas$otolith.perimeter^2)
+
+shape_meas$Ellipticity <- (shape_meas$otolith.length - shape_meas$otolith.width) /
+                          (shape_meas$otolith.length + shape_meas$otolith.width)
+
+
+# List of original variables to standardize
+measure_vars <- c("otolith.area", "otolith.length", "otolith.width", "otolith.perimeter",
+                  "Circularity", "Rectangularity", "Roundness",
+                  "Aspect_Ratio", "Form_Factor", "Ellipticity")
+
+## Standardisation measure -- according to Park et al 2024 otolith morphology as a tool for stock discrimination of three rockfish species in the East Sea of Korea
+
+# Mean TL
+meanTL <- mean(shape_meas$length_cm, na.rm = TRUE)
+
+# Standardization loop
+for (var in measure_vars) {
+  if (all(!is.na(shape_meas[[var]]))) {
+    logMO <- log(shape_meas[[var]])
+    logTL <- log(shape_meas$length_cm)
+    
+    # Linear regression to estimate slope b
+    b_model <- lm(logMO ~ logTL)
+    b <- coef(b_model)[2]
+    
+    # Apply standardization
+    Ms <- exp(logMO + b * (log(meanTL) - logTL))
+    
+    # Save standardized variable
+    var_std <- paste0(var, "_std")
+    shape_meas[[var_std]] <- Ms
+  }
+}
+
+
+# Save to CSV
+write.csv(shape_meas, 
+          file = "all_shape_indices.csv", 
+          row.names = FALSE)
+
+
+## We have to check for normalisation.
+
+# List of standardized variables to check
+shape_vars_std <- c("otolith.area_std", "otolith.length_std", "otolith.width_std", "otolith.perimeter_std",
+                    "Circularity_std", "Rectangularity_std", "Roundness_std",
+                    "Aspect_Ratio_std", "Form_Factor_std", "Ellipticity_std")
+
+# Create results table
+shapiro_results <- data.frame(
+    Variable = character(),
+    W_statistic = numeric(),
+    p_value = numeric(),
+    Normality_Passed = logical(),
+    stringsAsFactors = FALSE
+)
+
+# Run tests
+for (var in shape_vars_std) {
+    if (all(!is.na(shape_meas[[var]]))) {
+        result <- shapiro.test(shape_meas[[var]])
+        shapiro_results <- rbind(shapiro_results, data.frame(
+            Variable = var,
+            W_statistic = round(result$statistic, 4),
+            p_value = round(result$p.value, 4),
+            Normality_Passed = result$p.value > 0.05
+        ))
+    }
+}
+
+print(shapiro_results)
+
+
+
+# Save results
+write.csv(shapiro_results, "shapiro_wilk_shape_indices.csv", row.names = FALSE)
+
+
+
+# Create empty data frame to store results
+levene_results <- data.frame(
+    Variable = character(),
+    df1 = integer(),
+    df2 = integer(),
+    F_statistic = numeric(),
+    p_value = numeric(),
+    Equal_Variance = logical(),
+    stringsAsFactors = FALSE
+)
+
+# Loop through each standardized variable
+for (var in shape_vars_std) {
+    if (all(!is.na(shape_meas[[var]]))) {
+        # Dynamically create formula, e.g., otolith.length_std ~ pop
+        fmla <- as.formula(paste(var, "~ pop"))
+        
+        # Run Levene's test using rstatix (center = "median" is default)
+        test_result <- levene_test(data = shape_meas, formula = fmla)
+        
+        # Store results
+        levene_results <- rbind(levene_results, data.frame(
+            Variable = var,
+            df1 = test_result$df1,
+            df2 = test_result$df2,
+            F_statistic = round(test_result$statistic, 4),
+            p_value = round(test_result$p, 4),
+            Equal_Variance = test_result$p > 0.05
+        ))
+    }
+}
+
+# Save to CSV
+write.csv(levene_results, "levene_shape_indices.csv", row.names = FALSE)
+
+print (levene_results)
+
+## We should now perform the reccommended test for each shape indices.
+
+shape_meas <- read.csv("all_shape_indices.csv")
+
+group_var <- "pop"
+
+# Categorize variables
+param_vars <- c("otolith.length_std", "Circularity_std", "Rectangularity_std", 
+                "Ellipticity_std", "Aspect_Ratio_std", "Form_Factor_std")
+
+nonparam_vars <- c("otolith.area_std", "otolith.width_std", 
+                   "otolith.perimeter_std", "Roundness_std", "otolith.length_std", "Circularity_std", "Rectangularity_std", 
+                "Ellipticity_std", "Aspect_Ratio_std", "Form_Factor_std")
+
+# Function for ANOVA + Tukey HSD
+run_anova_tukey <- function(var) {
+  model <- aov(as.formula(paste(var, "~", group_var)), data = shape_meas)
+  print(paste("ANOVA for:", var))
+  print(summary(model))
+  
+  tukey <- TukeyHSD(model)
+  print(tukey)
+  
+  tukey_df <- as.data.frame(tukey[[1]])
+  tukey_df$comparison <- rownames(tukey_df)
+  write.csv(tukey_df, paste0("tukeyHSD_", var, ".csv"), row.names = FALSE)
+}
+
+# Function for Kruskal-Wallis + Dunn
+run_kruskal_dunn <- function(var) {
+  kruskal <- kruskal.test(as.formula(paste(var, "~", group_var)), data = shape_meas)
+  print(paste("Kruskal-Wallis for:", var))
+  print(kruskal)
+  
+  dunn <- shape_meas %>%
+    dunn_test(as.formula(paste(var, "~", group_var)), p.adjust.method = "holm")
+  
+  write.csv(dunn, paste0("dunn_", var, ".csv"), row.names = FALSE)
+}
+
+# Run ANOVA + Tukey
+for (var in param_vars) {
+  run_anova_tukey(var)
+}
+
+# Run non-parametric tests
+for (var in nonparam_vars) {
+  run_kruskal_dunn(var)
+}
+
+message("All tests complete.")
+
+## None of these groups show significant differences.
