@@ -6,7 +6,7 @@ The data contained in this folder corresponds to the data for the paper entitled
 The otolith images have been converted to black-and-white.
 The naming convention for the otoliths go:
 [sample]_d = right distal
-[sample]_led = left distal
+[sample]_ld = left distal
 
 Data structure is as follows:
 
@@ -15,6 +15,8 @@ priorTest1   - folder containing the information pertaining to Prior test 1: lef
 priorTest2 - folder containing the information pertaining to Prior Test 2: temporal comparison of 2014 vs 2019 AKW samples [standardised wavelet coefficients (26 individuals/otoliths total)].
 
 populationLevelDifferences - folder containing the information pertaining to Stock-level differences [standardised shape indices, and standardised wavelet coefficients (112 individuals/otoliths total].
+
+ADDED 04/04/2026 - reviewerComments_addressed - folder containing supplementary scripts (PERMANOVA Power Analysis and additions to priorTest2) in response to commends regarding sampling size and temporal effects, respectively.
 
 Description of the data and file structure
 
