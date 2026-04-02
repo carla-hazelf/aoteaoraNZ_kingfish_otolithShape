@@ -16,7 +16,7 @@ priorTest2 - folder containing the information pertaining to Prior Test 2: tempo
 
 populationLevelDifferences - folder containing the information pertaining to Stock-level differences [standardised shape indices, and standardised wavelet coefficients (112 individuals/otoliths total].
 
-ADDED 04/04/2026 - reviewerComments_addressed - folder containing supplementary scripts (PERMANOVA Power Analysis and additions to priorTest2) in response to commends regarding sampling size and temporal effects, respectively.
+ADDED 04/04/2026 - reviewerComments_addressed - folder containing supplementary scripts (PERMANOVA Power Analysis and additions to priorTest2) in response to concerns regarding sampling size and temporal effects, respectively.
 
 Description of the data and file structure
 
